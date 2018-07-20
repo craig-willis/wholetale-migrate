@@ -7,6 +7,9 @@ from girder.models.item import Item
 from girder.models.user import User
 from girder.utility.path import getResourcePath
 from girder.utility.path import lookUpPath
+from girder.plugins.wholetale.models.image import Image
+from girder.plugins.wholetale.models.tale import Tale
+from girder.plugins.wholetale.models.instance import Instance
 
 import argparse
 import glob
@@ -17,6 +20,7 @@ import os
 import os.path
 import time
 
+
 # Mount folder via webdav
 def mount(api_key, path, folderId, apiUrl):
     print("Mounting %s to %s" % (folderId, path))
@@ -25,11 +29,13 @@ def mount(api_key, path, folderId, apiUrl):
     print("Calling: %s", cmd)
     subprocess.call(cmd, shell=True)
 
+
 # Unmount webdav folder
 def unmount(tmpDir):
     print("Unmounting %s" % tmpDir)
     cmd = 'fusermount -u %s' % tmpDir
     subprocess.call(cmd, shell=True)
+
 
 # Get the list of files from the assetstore
 def getFiles(assetstoreId):
@@ -37,6 +43,7 @@ def getFiles(assetstoreId):
         'assetstoreId': ObjectId(assetstoreId)
     }))
     return files
+
 
 # Download files from the specified assetstore to temporary location
 def downloadFiles(assetstoreId):
@@ -58,7 +65,6 @@ def downloadFiles(assetstoreId):
 
                 if 'copied' in file:
                     continue;
-
 
                 print("Downloading files for user %s" % (user))
                 print ("File %s" % file)
@@ -134,6 +140,55 @@ def migrate(user, apiUrl):
     ApiKey().remove(apiKey)
 
 
+# Convert images to use iframes
+def migrateIframe():
+
+    # Set iframe attributes on images and tales
+    for img in Image().find():
+        img['iframe'] = True
+        Image().save(img, validate=True)
+
+    for tale in Tale().find({}):
+        tale['iframe'] = True
+        Tale().save(tale, validate=True)
+
+    # Add config to Jupyter images
+    for image in Image().find():
+
+        if 'rstudio' in image['fullName']:
+            image['config'] = {
+                "command": "/init",
+                "environment": [
+                    "CSP_HOSTS=dashboard.stage.wholetale.org"
+                ],
+                "port": 8787,
+                "targetMount": "/home/rstudio/work",
+                "urlPath": "",
+                "user": "rstudio"
+            }
+            Image().save(image)
+
+        else:
+            image['config'] = {
+                "command": "jupyter notebook --no-browser --port {port} --ip=0.0.0.0 --NotebookApp.token={token} --NotebookApp.base_url=/{base_path} --NotebookApp.port_retries=0",
+                "memLimit": "2048m",
+                "port": 8888,
+                "targetMount": "/home/jovyan/work",
+                "urlPath": "?token={token}",
+                "user": "jovyan",
+                "environment": [
+                    "CSP_HOSTS=\"dashboard.stage.wholetale.org\""
+                ]
+            }
+        Image().save(image)
+
+
+# Delete all running instances
+def migrateInstances():
+    for instance in Instance().find({}):
+        Instance().remove(instance)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Migrate GridFS to WebDav assetstore.')
     parser.add_argument('-a', '--assetstore', required=True, help='Assetstore ID')
@@ -142,6 +197,12 @@ def main():
     args = parser.parse_args()
     print('Using API Server %s' % args.url)
     print('Downloading files from assetstore %s' % args.assetstore)
+
+    # Migrate tales and images
+    migrateIframe()
+
+    # Delete instances
+    migrateInstances()
 
     # Download files to /user
     downloaded_files = downloadFiles(args.assetstore)
@@ -165,7 +226,7 @@ def main():
         file = File().load(file_id, force=True)
         File().remove(file)
 
+
+
 if __name__ == "__main__":
     main()
-
-
